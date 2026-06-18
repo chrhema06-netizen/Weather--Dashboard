@@ -8,7 +8,7 @@
     "client:dev": "vite",
     "server:dev": "nodemon server.js",
     "server": "node server.js",
-    "build": "vite build",
+    "build": "node node_modules/vite/bin/vite.js build",
     "preview": "vite preview"
   },
   "devDependencies": {

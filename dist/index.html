@@ -9,8 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <!-- Stylesheet -->
-  <script type="module" crossorigin src="/assets/index-BsbSqRWS.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-BpFV5Qr-.css">
+  <script type="module" crossorigin src="/assets/index-BBshRfIb.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-pOFKaRoa.css">
 </head>
 <body class="theme-clear-day">
   <div class="app-container">
@@ -20,6 +20,9 @@
     
     <!-- Sidebar backdrop overlay for mobile -->
     <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
     
     <!-- Sidebar (Saved Locations / History) -->
     <aside class="sidebar" id="sidebar">
@@ -41,10 +44,23 @@
       
       <div class="sidebar-content">
         <div class="saved-locations-section">
-          <h3>Saved Locations</h3>
+          <div class="saved-section-header">
+            <h3>Saved Locations</h3>
+            <span class="saved-count-badge" id="saved-count-badge">0</span>
+          </div>
+
+          <!-- Quick Add Location Search -->
+          <div class="sidebar-search-wrapper">
+            <svg class="sidebar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" id="sidebar-search-input" class="sidebar-search-input" placeholder="Search & save a city..." autocomplete="off">
+          </div>
+          <div class="sidebar-autocomplete" id="sidebar-autocomplete" hidden></div>
+
           <div class="saved-locations-list" id="saved-locations-list">
             <!-- Dynamically populated saved locations -->
-            <div class="empty-state">No saved locations yet. Search for a city and click the heart icon to save.</div>
           </div>
         </div>
       </div>

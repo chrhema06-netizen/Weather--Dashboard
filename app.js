@@ -118,7 +118,13 @@ const els = {
   
   // Weather overlays
   effectOverlay: document.getElementById('weather-effect-overlay'),
-  sidebarOverlay: document.getElementById('sidebar-overlay')
+  sidebarOverlay: document.getElementById('sidebar-overlay'),
+  
+  // Saved location UI additions
+  sidebarSearchInput: document.getElementById('sidebar-search-input'),
+  sidebarAutocomplete: document.getElementById('sidebar-autocomplete'),
+  savedCountBadge: document.getElementById('saved-count-badge'),
+  toastContainer: document.getElementById('toast-container')
 };
 
 // ==========================================================================
@@ -174,7 +180,27 @@ function initEventListeners() {
     if (!els.searchInput.contains(e.target) && !els.autocompleteDropdown.contains(e.target)) {
       els.autocompleteDropdown.hidden = true;
     }
+    if (els.sidebarSearchInput && els.sidebarAutocomplete && !els.sidebarSearchInput.contains(e.target) && !els.sidebarAutocomplete.contains(e.target)) {
+      els.sidebarAutocomplete.hidden = true;
+    }
   });
+
+  // Sidebar Search with debounce
+  if (els.sidebarSearchInput) {
+    els.sidebarSearchInput.addEventListener('input', (e) => {
+      const query = e.target.value.trim();
+      clearTimeout(state.debounceTimeout);
+      
+      if (query.length < 2) {
+        if (els.sidebarAutocomplete) els.sidebarAutocomplete.hidden = true;
+        return;
+      }
+      
+      state.debounceTimeout = setTimeout(() => {
+        handleSidebarSearchAutocomplete(query);
+      }, 300);
+    });
+  }
   
   // Geolocation Buttons
   els.locateBtn.addEventListener('click', () => tryGeolocation(false));
@@ -288,19 +314,33 @@ function renderAutocompleteSuggestions(results) {
     item.className = 'suggestion-item';
     
     const adminStr = loc.admin1 ? `${loc.admin1}, ` : '';
+    const isSaved = state.savedLocations.some(sLoc => isSameLocation(sLoc.lat, sLoc.lon, loc.latitude, loc.longitude));
     
     item.innerHTML = `
       <div class="suggestion-main">
         <span class="suggestion-name">${loc.name}</span>
         <span class="suggestion-admin">${adminStr}${loc.country}</span>
       </div>
-      <span class="suggestion-country">${loc.country_code ? loc.country_code.toUpperCase() : ''}</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span class="suggestion-country">${loc.country_code ? loc.country_code.toUpperCase() : ''}</span>
+        <button class="suggestion-quick-save ${isSaved ? 'saved' : ''}" title="${isSaved ? 'Remove from Saved' : 'Quick Save'}">
+          <svg viewBox="0 0 24 24" fill="${isSaved ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+          </svg>
+        </button>
+      </div>
     `;
     
     item.addEventListener('click', () => {
       els.searchInput.value = '';
       els.autocompleteDropdown.hidden = true;
       fetchWeatherForLocation(loc.latitude, loc.longitude, `${loc.name}, ${loc.country}`);
+    });
+    
+    const saveBtn = item.querySelector('.suggestion-quick-save');
+    saveBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      quickSaveLocation(e, loc, 'suggestion-quick-save', 'saved');
     });
     
     els.autocompleteDropdown.appendChild(item);
@@ -759,10 +799,18 @@ async function fetchSavedLocations() {
     const res = await fetch('/api/locations');
     if (res.ok) {
       state.savedLocations = await res.json();
+      localStorage.setItem('skyflow_saved_locations', JSON.stringify(state.savedLocations));
       renderSavedLocations();
+    } else {
+      throw new Error('Server returned non-ok status');
     }
   } catch (err) {
-    console.error('Error fetching saved locations from database:', err);
+    console.warn('Error fetching saved locations from backend database, loading from localStorage fallback:', err);
+    const stored = localStorage.getItem('skyflow_saved_locations');
+    if (stored) {
+      state.savedLocations = JSON.parse(stored);
+      renderSavedLocations();
+    }
   }
 }
 
@@ -775,60 +823,126 @@ async function toggleSaveCurrentLocation() {
     let res;
     if (isSaved) {
       // DELETE
-      res = await fetch(`/api/locations?lat=${state.currentCoords.lat}&lon=${state.currentCoords.lon}`, {
-        method: 'DELETE'
-      });
-      if (res.ok) els.saveLocationBtn.classList.remove('saved');
+      try {
+        res = await fetch(`/api/locations?lat=${state.currentCoords.lat}&lon=${state.currentCoords.lon}`, {
+          method: 'DELETE'
+        });
+      } catch (err) {
+        console.warn('Backend delete failed, falling back to local storage', err);
+      }
+      
+      if (res && res.ok) {
+        state.savedLocations = await res.json();
+      } else {
+        // Fallback
+        state.savedLocations = state.savedLocations.filter(loc => !isSameLocation(loc.lat, loc.lon, state.currentCoords.lat, state.currentCoords.lon));
+      }
+      
+      els.saveLocationBtn.classList.remove('saved');
+      showToast('Location Removed', `${state.currentCityName} was removed from saved locations.`, 'info');
     } else {
       // POST
-      res = await fetch('/api/locations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: state.currentCityName,
-          lat: state.currentCoords.lat,
-          lon: state.currentCoords.lon,
-          temp: state.weatherData.current.temperature_2m,
-          code: state.weatherData.current.weather_code
-        })
-      });
-      if (res.ok) els.saveLocationBtn.classList.add('saved');
+      try {
+        res = await fetch('/api/locations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: state.currentCityName,
+            lat: state.currentCoords.lat,
+            lon: state.currentCoords.lon,
+            temp: state.weatherData.current.temperature_2m,
+            code: state.weatherData.current.weather_code
+          })
+        });
+      } catch (err) {
+        console.warn('Backend save failed, falling back to local storage', err);
+      }
+      
+      if (res && res.ok) {
+        state.savedLocations = await res.json();
+      } else {
+        // Fallback
+        const exists = state.savedLocations.some(loc => isSameLocation(loc.lat, loc.lon, state.currentCoords.lat, state.currentCoords.lon));
+        if (!exists) {
+          state.savedLocations.push({
+            name: state.currentCityName,
+            lat: state.currentCoords.lat,
+            lon: state.currentCoords.lon,
+            temp: state.weatherData.current.temperature_2m,
+            code: state.weatherData.current.weather_code
+          });
+        }
+      }
+      
+      els.saveLocationBtn.classList.add('saved');
+      showToast('Location Saved', `${state.currentCityName} was added to saved locations.`, 'success');
     }
     
-    if (res && res.ok) {
-      state.savedLocations = await res.json();
-      renderSavedLocations();
-    }
+    localStorage.setItem('skyflow_saved_locations', JSON.stringify(state.savedLocations));
+    renderSavedLocations();
   } catch (err) {
-    console.error('Failed to sync location save changes with database:', err);
+    console.error('Failed to sync location save changes:', err);
+    showToast('Operation Failed', 'Could not update saved locations.', 'error');
   }
 }
 
 async function deleteSavedLocation(e, lat, lon) {
-  e.stopPropagation(); // prevent opening location weather details
+  if (e && e.stopPropagation) e.stopPropagation(); // prevent opening location weather details
+  
+  const targetLoc = state.savedLocations.find(loc => isSameLocation(loc.lat, loc.lon, lat, lon));
+  const locName = targetLoc ? targetLoc.name : 'Location';
+  
   try {
-    const res = await fetch(`/api/locations?lat=${lat}&lon=${lon}`, {
-      method: 'DELETE'
-    });
-    if (res.ok) {
-      state.savedLocations = await res.json();
-      renderSavedLocations();
-      
-      // Update heart icon if deleting current location
-      if (state.currentCoords && isSameLocation(state.currentCoords.lat, state.currentCoords.lon, lat, lon)) {
-        els.saveLocationBtn.classList.remove('saved');
-      }
+    let res;
+    try {
+      res = await fetch(`/api/locations?lat=${lat}&lon=${lon}`, {
+        method: 'DELETE'
+      });
+    } catch (err) {
+      console.warn('Backend delete failed, falling back to local storage', err);
     }
+    
+    if (res && res.ok) {
+      state.savedLocations = await res.json();
+    } else {
+      // Fallback
+      state.savedLocations = state.savedLocations.filter(loc => !isSameLocation(loc.lat, loc.lon, lat, lon));
+    }
+    
+    localStorage.setItem('skyflow_saved_locations', JSON.stringify(state.savedLocations));
+    renderSavedLocations();
+    
+    // Update heart icon if deleting current location
+    if (state.currentCoords && isSameLocation(state.currentCoords.lat, state.currentCoords.lon, lat, lon)) {
+      els.saveLocationBtn.classList.remove('saved');
+    }
+    
+    showToast('Location Removed', `${locName} was removed from saved locations.`, 'info');
   } catch (err) {
-    console.error('Failed to delete saved location from database:', err);
+    console.error('Failed to delete saved location:', err);
+    showToast('Delete Failed', `Could not delete ${locName}.`, 'error');
   }
 }
 
 async function renderSavedLocations() {
   els.savedLocationsList.innerHTML = '';
   
+  // Update count badge
+  if (els.savedCountBadge) {
+    els.savedCountBadge.textContent = state.savedLocations.length;
+    els.savedCountBadge.style.display = state.savedLocations.length > 0 ? 'inline-flex' : 'none';
+  }
+  
   if (state.savedLocations.length === 0) {
-    els.savedLocationsList.innerHTML = '<div class="empty-state">No saved locations yet. Search for a city and click the heart icon to save.</div>';
+    els.savedLocationsList.innerHTML = `
+      <div class="empty-state">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width: 48px; height: 48px; margin-bottom: 15px; opacity: 0.4;">
+          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+        </svg>
+        <p>No saved locations yet.</p>
+        <p style="font-size: 0.75rem; margin-top: 5px; opacity: 0.6;">Search for cities and tap the heart icon to save them for quick access here.</p>
+      </div>
+    `;
     return;
   }
   
@@ -871,7 +985,7 @@ async function renderSavedLocations() {
     
     els.savedLocationsList.appendChild(item);
     
-    // Asynchronously refresh the cached saved location temperatures via local backend proxies
+    // Asynchronously refresh the cached saved location temperatures
     try {
       const res = await fetch(`/api/weather?lat=${loc.lat}&lon=${loc.lon}`);
       if (res.ok) {
@@ -884,11 +998,16 @@ async function renderSavedLocations() {
           loc.temp = freshTemp;
           loc.code = freshCode;
           
-          await fetch('/api/locations', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(loc)
-          });
+          try {
+            await fetch('/api/locations', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(loc)
+            });
+          } catch (e) {
+            // Silently swallow backend failures
+          }
+          localStorage.setItem('skyflow_saved_locations', JSON.stringify(state.savedLocations));
         }
         
         // Refresh local UI cards
@@ -1226,5 +1345,194 @@ function generateWeatherIconSVG(iconName, isLarge = false) {
           <path d="M30 66 H66 A18 18 0 0 0 66 30 A18 18 0 0 0 53 36 A22 22 0 0 0 30 66 Z" fill="rgba(255, 255, 255, 0.7)"/>
         </svg>
       `;
+  }
+}
+
+// ==========================================================================
+// TOAST NOTIFICATIONS
+// ==========================================================================
+function showToast(title, message, type = 'info') {
+  if (!els.toastContainer) return;
+  
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  
+  let iconSvg = '';
+  if (type === 'success') {
+    iconSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="#00e676" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+  } else if (type === 'error') {
+    iconSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="#ff3d00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>`;
+  } else {
+    iconSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="#3498db" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`;
+  }
+  
+  toast.innerHTML = `
+    <div class="toast-icon ${type}">
+      ${iconSvg}
+    </div>
+    <div class="toast-body">
+      <div class="toast-title">${title}</div>
+      <div class="toast-message">${message}</div>
+    </div>
+    <button class="toast-close" title="Close">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"></line>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+      </svg>
+    </button>
+  `;
+  
+  const closeBtn = toast.querySelector('.toast-close');
+  closeBtn.addEventListener('click', () => {
+    toast.classList.add('toast-hide');
+    setTimeout(() => toast.remove(), 300);
+  });
+  
+  setTimeout(() => {
+    if (toast.parentElement) {
+      toast.classList.add('toast-hide');
+      setTimeout(() => toast.remove(), 300);
+    }
+  }, 4000);
+  
+  els.toastContainer.appendChild(toast);
+}
+
+// ==========================================================================
+// SIDEBAR SEARCH & AUTOCOMPLETE
+// ==========================================================================
+async function handleSidebarSearchAutocomplete(query) {
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+    if (!res.ok) throw new Error('Sidebar search failed');
+    
+    const data = await res.json();
+    if (!data.results || data.results.length === 0) {
+      els.sidebarAutocomplete.innerHTML = '<div class="sidebar-suggestion-item"><span class="sidebar-suggestion-name">No locations found</span></div>';
+      els.sidebarAutocomplete.hidden = false;
+      return;
+    }
+    
+    renderSidebarAutocompleteSuggestions(data.results);
+  } catch (err) {
+    console.error('Sidebar autocomplete error:', err);
+  }
+}
+
+function renderSidebarAutocompleteSuggestions(results) {
+  els.sidebarAutocomplete.innerHTML = '';
+  results.forEach(loc => {
+    const item = document.createElement('div');
+    item.className = 'sidebar-suggestion-item';
+    
+    const adminStr = loc.admin1 ? `${loc.admin1}, ` : '';
+    const isSaved = state.savedLocations.some(sLoc => isSameLocation(sLoc.lat, sLoc.lon, loc.latitude, loc.longitude));
+    
+    item.innerHTML = `
+      <div class="sidebar-suggestion-info">
+        <span class="sidebar-suggestion-name">${loc.name}</span>
+        <span class="sidebar-suggestion-sub">${adminStr}${loc.country}</span>
+      </div>
+      <button class="quick-save-btn ${isSaved ? 'already-saved' : ''}" title="${isSaved ? 'Remove' : 'Quick Save'}">
+        <svg viewBox="0 0 24 24" fill="${isSaved ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+        </svg>
+      </button>
+    `;
+    
+    item.addEventListener('click', () => {
+      els.sidebarSearchInput.value = '';
+      els.sidebarAutocomplete.hidden = true;
+      els.sidebar.classList.remove('open');
+      els.sidebarOverlay.classList.remove('active');
+      fetchWeatherForLocation(loc.latitude, loc.longitude, `${loc.name}, ${loc.country}`);
+    });
+    
+    const saveBtn = item.querySelector('.quick-save-btn');
+    saveBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      quickSaveLocation(e, loc, 'quick-save-btn', 'already-saved');
+    });
+    
+    els.sidebarAutocomplete.appendChild(item);
+  });
+  
+  els.sidebarAutocomplete.hidden = false;
+}
+
+// ==========================================================================
+// QUICK-SAVE HANDLER
+// ==========================================================================
+async function quickSaveLocation(e, loc, btnClass, activeClass) {
+  const btn = e.currentTarget;
+  const isCurrentlySaved = btn.classList.contains(activeClass);
+  const lat = loc.latitude || loc.lat;
+  const lon = loc.longitude || loc.lon;
+  const name = loc.name + (loc.country ? `, ${loc.country}` : '');
+
+  if (isCurrentlySaved) {
+    btn.classList.remove(activeClass);
+    const svg = btn.querySelector('svg');
+    if (svg) svg.setAttribute('fill', 'none');
+    
+    const index = state.savedLocations.findIndex(sLoc => isSameLocation(sLoc.lat, sLoc.lon, lat, lon));
+    if (index !== -1) {
+      const mockEvent = { stopPropagation: () => {} };
+      await deleteSavedLocation(mockEvent, lat, lon);
+    }
+  } else {
+    showToast('Saving Location', `Fetching current weather for ${loc.name}...`, 'info');
+    
+    try {
+      const weatherUrl = `/api/weather?lat=${lat}&lon=${lon}`;
+      const response = await fetch(weatherUrl);
+      if (!response.ok) throw new Error('Failed to fetch weather data');
+      const weatherData = await response.json();
+      
+      const tempVal = weatherData.current.temperature_2m;
+      const weatherCode = weatherData.current.weather_code;
+      
+      let res;
+      try {
+        res = await fetch('/api/locations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name,
+            lat: lat,
+            lon: lon,
+            temp: tempVal,
+            code: weatherCode
+          })
+        });
+      } catch (err) {
+        console.warn('Backend save failed in quickSave, using localStorage fallback', err);
+      }
+      
+      if (res && res.ok) {
+        state.savedLocations = await res.json();
+      } else {
+        const exists = state.savedLocations.some(sLoc => isSameLocation(sLoc.lat, sLoc.lon, lat, lon));
+        if (!exists) {
+          state.savedLocations.push({ name, lat, lon, temp: tempVal, code: weatherCode });
+        }
+      }
+      
+      localStorage.setItem('skyflow_saved_locations', JSON.stringify(state.savedLocations));
+      renderSavedLocations();
+      
+      btn.classList.add(activeClass);
+      const svg = btn.querySelector('svg');
+      if (svg) svg.setAttribute('fill', 'currentColor');
+      
+      if (state.currentCoords && isSameLocation(state.currentCoords.lat, state.currentCoords.lon, lat, lon)) {
+        els.saveLocationBtn.classList.add('saved');
+      }
+      
+      showToast('Location Saved', `${loc.name} has been added to your list.`, 'success');
+    } catch (err) {
+      console.error('Quick save error:', err);
+      showToast('Save Failed', `Could not save location ${loc.name}.`, 'error');
+    }
   }
 }

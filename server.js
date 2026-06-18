@@ -139,6 +139,10 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
+
+// In-memory fallback database if filesystem is read-only
+let memoryDb = [];
+
 // 4. Saved Locations Database Routes
 app.get('/api/locations', async (req, res) => {
   try {
@@ -146,8 +150,8 @@ app.get('/api/locations', async (req, res) => {
     const locations = JSON.parse(data);
     res.json(locations);
   } catch (error) {
-    console.error('Read DB error:', error);
-    res.status(500).json({ error: 'Failed to retrieve saved locations' });
+    console.warn('[DB Warning] Read DB failed, serving from memory:', error.message);
+    res.json(memoryDb);
   }
 });
 
@@ -158,14 +162,24 @@ app.post('/api/locations', async (req, res) => {
   }
 
   try {
-    const data = await fs.readFile(DB_PATH, 'utf8');
-    const locations = JSON.parse(data);
+    let locations = [];
+    try {
+      const data = await fs.readFile(DB_PATH, 'utf8');
+      locations = JSON.parse(data);
+    } catch {
+      locations = [...memoryDb];
+    }
     
     const exists = locations.some(loc => isSameLocation(loc.lat, loc.lon, lat, lon));
     if (!exists) {
       locations.push({ name, lat, lon, temp, code });
-      await fs.writeFile(DB_PATH, JSON.stringify(locations, null, 2));
-      console.log(`[DB Write] Saved location: ${name}`);
+      try {
+        await fs.writeFile(DB_PATH, JSON.stringify(locations, null, 2));
+        console.log(`[DB Write] Saved location: ${name}`);
+      } catch (writeErr) {
+        console.warn('[DB Warning] Write DB failed, saving in memory:', writeErr.message);
+      }
+      memoryDb = locations; // Sync in memory
     }
     
     res.json(locations);
@@ -182,15 +196,25 @@ app.delete('/api/locations', async (req, res) => {
   }
 
   try {
-    const data = await fs.readFile(DB_PATH, 'utf8');
-    let locations = JSON.parse(data);
+    let locations = [];
+    try {
+      const data = await fs.readFile(DB_PATH, 'utf8');
+      locations = JSON.parse(data);
+    } catch {
+      locations = [...memoryDb];
+    }
     
     const initialLength = locations.length;
     locations = locations.filter(loc => !isSameLocation(loc.lat, loc.lon, lat, lon));
     
     if (locations.length < initialLength) {
-      await fs.writeFile(DB_PATH, JSON.stringify(locations, null, 2));
-      console.log(`[DB Write] Removed location at coords: ${lat}, ${lon}`);
+      try {
+        await fs.writeFile(DB_PATH, JSON.stringify(locations, null, 2));
+        console.log(`[DB Write] Removed location at coords: ${lat}, ${lon}`);
+      } catch (writeErr) {
+        console.warn('[DB Warning] Write DB failed, removing from memory:', writeErr.message);
+      }
+      memoryDb = locations; // Sync in memory
     }
     
     res.json(locations);
@@ -218,9 +242,13 @@ app.get('*', (req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`=========================================`);
-  console.log(` SkyFlow Backend active on port ${PORT}`);
-  console.log(` Server mode: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`=========================================`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`=========================================`);
+    console.log(` SkyFlow Backend active on port ${PORT}`);
+    console.log(` Server mode: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`=========================================`);
+  });
+}
+
+export default app;
